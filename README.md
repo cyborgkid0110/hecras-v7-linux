@@ -25,48 +25,50 @@ internal solver index tables and `RasUnsteady` runs the simulation.
 
 ## Installation
 
+Three commands and you're ready to simulate.
+
 ### Step 1 — Clone the repository
+
+The HEC-RAS v6.6 Linux binaries (`bin/`, `libs/`) are stored in the repo via
+**git LFS** — they download automatically when you clone.
 
 ```bash
 git clone https://github.com/your-org/Linux_RAS_v66.git
 cd Linux_RAS_v66
 ```
 
-### Step 2 — Obtain HEC-RAS Linux binaries
+> **Requires git-lfs.** Install it first if needed:
+> ```bash
+> # macOS
+> brew install git-lfs && git lfs install
+>
+> # Ubuntu / Debian
+> sudo apt install git-lfs && git lfs install
+> ```
 
-The executables and shared libraries are **not included** in this repo
-(platform-specific, not redistributable).  Download the HEC-RAS 6.6 Linux
-distribution from the [US Army Corps HEC website](https://www.hec.usace.army.mil/software/hec-ras/download.aspx)
-and unzip it.  Copy the two required directories into the repo root:
+### Step 2 — Install Python dependencies
 
-```
-Linux_RAS_v66/
-├── bin/          ← RasGeomPreprocess, RasUnsteady, RasSteady, …
-└── libs/         ← shared libraries (.so files)
-    ├── rhel_8/
-    └── mkl/
-```
-
-### Step 3 — Install Python dependencies
+Only needed for the preprocessing step (runs on your machine, not in Docker):
 
 ```bash
 pip install numpy scipy h5py gdal
 ```
 
-> **macOS / Conda tip:** GDAL is easiest to install via conda:
+> **macOS / Conda tip:** GDAL is easiest via conda:
 > ```bash
 > conda install -c conda-forge gdal numpy scipy h5py
 > ```
 
-### Step 4 — Build the Docker image
+### Step 3 — Build the Docker image
 
 ```bash
 docker build --platform linux/amd64 -t hecras-v66-amd64 .
 ```
 
-This builds a Rocky Linux 8 image with Python, the HEC-RAS binaries,
-and all shared libraries baked in.  The build takes 2–5 minutes and
-produces a ~1.1 GB image.
+This builds a Rocky Linux 8 image with Python, the HEC-RAS binaries, and all
+shared libraries baked in.  Takes 2–5 minutes, produces a ~1.1 GB image.
+
+That's it — you're ready to simulate.
 
 ---
 
@@ -228,14 +230,20 @@ from step 2 of Workflow B and writes a new `g01.hdf`.
 │   ├── BEC_WO_Infiltration/   # BEC without infiltration model
 │   ├── VA/                    # Virginia example (precipitation BC)
 │   └── Muncie/                # Muncie example (flow + precipitation BCs)
+├── bin/                       # HEC-RAS Linux executables (git LFS)
+│   ├── RasGeomPreprocess
+│   ├── RasUnsteady
+│   └── RasSteady
+├── libs/                      # HEC-RAS shared libraries (git LFS)
+│   ├── mkl/
+│   └── rhel_8/
 ├── remove_HDF5_Results_Sed.py # Strip results from an existing p01.hdf
 ├── RAS_v.6.6_Linux.pdf        # Official HEC-RAS 6.6 Linux documentation
 └── remove_HDF5_Results.pdf    # Guide: removing HDF5 results
 ```
 
-> **Not committed to git** (too large / not redistributable):
-> `bin/` – HEC-RAS Linux executables
-> `libs/` – HEC-RAS shared libraries
+> `bin/` and `libs/` are tracked via **git LFS** and download automatically
+> on `git clone`.  Total size: ~733 MB.
 
 ---
 
