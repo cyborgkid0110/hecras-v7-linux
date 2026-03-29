@@ -203,7 +203,7 @@ class TestPreprocessOnly:
         self._check_output(tmp_path, "Muncie")
 
     def test_after_run_workflow_c(self, tmp_path):
-        """AFTER_RUN — Workflow C: g01.hdf has tables + p01.hdf exists → strip & copy."""
+        """AFTER_RUN — Workflow A: g01.hdf has tables + p01.hdf exists → strip & copy."""
         run_preprocessor(EXAMPLES / "AFTER_RUN", tmp_path, project_name="test_hdf")
         g01_hdf = tmp_path / "test_hdf.g01.hdf"
         p01_tmp = tmp_path / "test_hdf.p01.tmp.hdf"
@@ -211,7 +211,7 @@ class TestPreprocessOnly:
         assert p01_tmp.exists(), "p01.tmp.hdf not produced"
         # The tmp.hdf must NOT contain a Results group
         with h5py.File(str(p01_tmp), 'r') as f:
-            assert 'Results' not in f, "Results group should be stripped in Workflow C"
+            assert 'Results' not in f, "Results group should be stripped in Workflow A"
 
 
 # ============================================================================
@@ -339,11 +339,11 @@ class TestFullPipeline:
 
     @requires_docker
     def test_after_run_workflow_c(self, tmp_path):
-        """AFTER_RUN Workflow C: strip results → run Docker → verify same output."""
+        """AFTER_RUN Workflow A: strip results → run Docker → verify same output."""
         out = tmp_path / "run"
         out.mkdir()
 
-        # Workflow C: preprocessor detects fully-computed project, strips results
+        # Workflow A: preprocessor detects fully-computed project, strips results
         run_preprocessor(EXAMPLES / "AFTER_RUN", out, project_name="test_hdf")
 
         # AFTER_RUN already has b01/x01

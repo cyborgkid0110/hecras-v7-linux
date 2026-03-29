@@ -993,7 +993,7 @@ def sample_infiltration(mesh: MeshData, inf_hdf_path: str,
 
 
 # ============================================================================
-# WORKFLOW A: READ MESH FROM EXISTING g01.hdf  (RASMapper-created mesh)
+# WORKFLOW B: READ MESH FROM EXISTING g01.hdf  (RASMapper-created mesh)
 # ============================================================================
 
 def read_mesh_from_g01hdf(g01_hdf_path: Path) -> tuple:
@@ -2047,11 +2047,11 @@ def main():
 
     # -----------------------------------------------------------------------
     # Detect workflow:
-    #   C) g01.hdf already has hydraulic tables AND p01.hdf (or p01.tmp.hdf)
+    #   A) g01.hdf already has hydraulic tables AND p01.hdf (or p01.tmp.hdf)
     #      already exists → strip Results, copy files, skip Python preprocessing
-    #   A) g01.hdf exists but no hydraulic tables (RASMapper created the mesh)
+    #   B) g01.hdf exists but no hydraulic tables (RASMapper created the mesh)
     #      → read mesh from HDF, compute hydraulic tables, update HDF in-place
-    #   B) No g01.hdf yet
+    #   C) No g01.hdf yet
     #      → build Voronoi mesh from .g01 seed points, write new g01.hdf
     # -----------------------------------------------------------------------
     src_g01_hdf = project_dir / f"{name}.g{plan}.hdf"
@@ -2064,10 +2064,10 @@ def main():
     if src_g01_hdf.exists() and _g01hdf_has_tables(src_g01_hdf) and \
             (src_p01_hdf.exists() or src_p01_tmp.exists()):
         # ===================================================================
-        # WORKFLOW C: GUI already ran geometry compute — just strip results
+        # WORKFLOW A: GUI already ran geometry compute — just strip results
         # and hand off to RasGeomPreprocess + RasUnsteady.
         # ===================================================================
-        logger.info("=== WORKFLOW C: Fully-computed g01.hdf + existing p01 found ===")
+        logger.info("=== WORKFLOW A: Fully-computed g01.hdf + existing p01 found ===")
         logger.info("    Copying geometry HDF and stripping results from plan HDF …")
 
         # Copy g01.hdf to output (no-op when same path)
@@ -2085,7 +2085,7 @@ def main():
             _strip_results(src_p01_hdf, p01_tmp_path)
             logger.info("    Written: %s", p01_tmp_path)
 
-        logger.info("=== DONE (Workflow C) ===")
+        logger.info("=== DONE (Workflow A) ===")
         logger.info("  Geometry: %s", out_g01_hdf)
         logger.info("  Plan:     %s", p01_tmp_path)
         logger.info("")
@@ -2095,7 +2095,7 @@ def main():
         return
 
     if src_g01_hdf.exists():
-        logger.info("=== WORKFLOW A: RASMapper g01.hdf found – computing hydraulic tables ===")
+        logger.info("=== WORKFLOW B: RASMapper g01.hdf found – computing hydraulic tables ===")
 
         # Step A1: Read mesh topology from existing HDF
         mesh, meta = read_mesh_from_g01hdf(src_g01_hdf)
@@ -2130,7 +2130,7 @@ def main():
                                          inf_data, bc_ext_faces, projection_wkt)
 
     else:
-        logger.info("=== WORKFLOW B: No g01.hdf – building Voronoi mesh from .g01 ===")
+        logger.info("=== WORKFLOW C: No g01.hdf – building Voronoi mesh from .g01 ===")
 
         # Step B1: Parse .g01
         g01 = parse_g01(g01_path)
@@ -2159,7 +2159,7 @@ def main():
         write_geometry_hdf(out_g01_hdf, mesh, cell_props, face_props,
                            lc_data, inf_data, g01, projection_wkt)
 
-    # Step 7: Assemble p01.tmp.hdf (same for Workflows A and B)
+    # Step 7: Assemble p01.tmp.hdf (same for Workflows B and C)
     assemble_p01_tmp_hdf(out_g01_hdf, p01_path, p01_tmp_path, projection_wkt)
 
     logger.info("=== DONE ===")
@@ -2175,7 +2175,7 @@ def _strip_results(src_hdf: Path, dst_hdf: Path) -> None:
     """Copy src_hdf → dst_hdf omitting Results and other result-only groups.
 
     This mirrors the remove_HDF5_Results_Sed.py utility and is used by
-    Workflow C to prepare a fresh p01.tmp.hdf from an existing p01.hdf.
+    Workflow A to prepare a fresh p01.tmp.hdf from an existing p01.hdf.
     """
     SKIP = {
         'Results',
@@ -2206,7 +2206,8 @@ def _g01hdf_has_tables(g01_hdf_path: Path) -> bool:
                 if area_name == 'Attributes':
                     continue
                 area_grp = geo[area_name]
-                if 'Cells Volume Elevation Info' in area_grp:
+                if isinstance(area_grp, h5py.Group) and \
+                        'Cells Volume Elevation Info' in area_grp.keys():
                     return True
     except Exception:
         pass
