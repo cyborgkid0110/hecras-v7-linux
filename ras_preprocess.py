@@ -13,6 +13,7 @@ Usage:
 import argparse
 import logging
 import re
+import shutil
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -2046,13 +2047,52 @@ def main():
 
     # -----------------------------------------------------------------------
     # Detect workflow:
-    #   A) g01.hdf already exists (RASMapper created the mesh, no compute yet)
+    #   C) g01.hdf already has hydraulic tables AND p01.hdf (or p01.tmp.hdf)
+    #      already exists → strip Results, copy files, skip Python preprocessing
+    #   A) g01.hdf exists but no hydraulic tables (RASMapper created the mesh)
     #      → read mesh from HDF, compute hydraulic tables, update HDF in-place
     #   B) No g01.hdf yet
     #      → build Voronoi mesh from .g01 seed points, write new g01.hdf
     # -----------------------------------------------------------------------
     src_g01_hdf = project_dir / f"{name}.g{plan}.hdf"
     out_g01_hdf = output_dir / f"{name}.g{plan}.hdf"
+
+    src_p01_hdf = project_dir / f"{name}.p{plan}.hdf"
+    src_p01_tmp = project_dir / f"{name}.p{plan}.tmp.hdf"
+    p01_tmp_path = output_dir / f"{name}.p{plan}.tmp.hdf"
+
+    if src_g01_hdf.exists() and _g01hdf_has_tables(src_g01_hdf) and \
+            (src_p01_hdf.exists() or src_p01_tmp.exists()):
+        # ===================================================================
+        # WORKFLOW C: GUI already ran geometry compute — just strip results
+        # and hand off to RasGeomPreprocess + RasUnsteady.
+        # ===================================================================
+        logger.info("=== WORKFLOW C: Fully-computed g01.hdf + existing p01 found ===")
+        logger.info("    Copying geometry HDF and stripping results from plan HDF …")
+
+        # Copy g01.hdf to output (no-op when same path)
+        if src_g01_hdf.resolve() != out_g01_hdf.resolve():
+            shutil.copy2(str(src_g01_hdf), str(out_g01_hdf))
+            logger.info("    Copied: %s", out_g01_hdf)
+
+        # Produce p01.tmp.hdf: prefer pre-existing tmp.hdf; else strip p01.hdf
+        if src_p01_tmp.exists():
+            if src_p01_tmp.resolve() != p01_tmp_path.resolve():
+                shutil.copy2(str(src_p01_tmp), str(p01_tmp_path))
+                logger.info("    Copied: %s", p01_tmp_path)
+        else:
+            logger.info("    Stripping results from %s …", src_p01_hdf.name)
+            _strip_results(src_p01_hdf, p01_tmp_path)
+            logger.info("    Written: %s", p01_tmp_path)
+
+        logger.info("=== DONE (Workflow C) ===")
+        logger.info("  Geometry: %s", out_g01_hdf)
+        logger.info("  Plan:     %s", p01_tmp_path)
+        logger.info("")
+        logger.info("Next steps:")
+        logger.info("  1. RasGeomPreprocess %s.p%s.tmp.hdf x%s", name, plan, plan)
+        logger.info("  2. RasUnsteady %s.p%s.tmp.hdf x%s", name, plan, plan)
+        return
 
     if src_g01_hdf.exists():
         logger.info("=== WORKFLOW A: RASMapper g01.hdf found – computing hydraulic tables ===")
@@ -2119,8 +2159,7 @@ def main():
         write_geometry_hdf(out_g01_hdf, mesh, cell_props, face_props,
                            lc_data, inf_data, g01, projection_wkt)
 
-    # Step 7: Assemble p01.tmp.hdf (same for both workflows)
-    p01_tmp_path = output_dir / f"{name}.p{plan}.tmp.hdf"
+    # Step 7: Assemble p01.tmp.hdf (same for Workflows A and B)
     assemble_p01_tmp_hdf(out_g01_hdf, p01_path, p01_tmp_path, projection_wkt)
 
     logger.info("=== DONE ===")
@@ -2130,6 +2169,48 @@ def main():
     logger.info("Next steps:")
     logger.info("  1. RasGeomPreprocess %s.p%s.tmp.hdf x%s", name, plan, plan)
     logger.info("  2. RasUnsteady %s.p%s.tmp.hdf x%s", name, plan, plan)
+
+
+def _strip_results(src_hdf: Path, dst_hdf: Path) -> None:
+    """Copy src_hdf → dst_hdf omitting Results and other result-only groups.
+
+    This mirrors the remove_HDF5_Results_Sed.py utility and is used by
+    Workflow C to prepare a fresh p01.tmp.hdf from an existing p01.hdf.
+    """
+    SKIP = {
+        'Results',
+        'Bed Time Series',
+        'DSS Time Series',
+        'Transport Time Series',
+        'Unsteady Time Series',
+    }
+    with h5py.File(str(src_hdf), 'r') as src, h5py.File(str(dst_hdf), 'w') as dst:
+        # Copy root-level attributes
+        for attr_key, attr_val in src.attrs.items():
+            try:
+                dst.attrs[attr_key] = attr_val
+            except Exception:
+                pass
+        # Copy all groups/datasets except results groups
+        for key in src.keys():
+            if key not in SKIP:
+                src.copy(key, dst)
+
+
+def _g01hdf_has_tables(g01_hdf_path: Path) -> bool:
+    """Return True if the g01.hdf already contains computed hydraulic tables."""
+    try:
+        with h5py.File(str(g01_hdf_path), 'r') as hf:
+            geo = hf.get('Geometry/2D Flow Areas', {})
+            for area_name in geo.keys():
+                if area_name == 'Attributes':
+                    continue
+                area_grp = geo[area_name]
+                if 'Cells Volume Elevation Info' in area_grp:
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def _find_terrain_tif(project_dir):
