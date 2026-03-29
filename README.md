@@ -33,7 +33,7 @@ The HEC-RAS v6.6 Linux binaries (`bin/`, `libs/`) are stored in the repo via
 **git LFS** — they download automatically when you clone.
 
 ```bash
-git clone https://github.com/your-org/Linux_RAS_v66.git
+git clone https://github.com/neeraip/hecras-v66-linux.git
 cd Linux_RAS_v66
 ```
 
