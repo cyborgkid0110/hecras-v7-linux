@@ -1,7 +1,3 @@
-# HEC-RAS Linux binaries (platform-specific, not redistributable)
-bin/
-libs/
-
 # Python
 __pycache__/
 *.py[cod]
