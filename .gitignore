@@ -1,0 +1,44 @@
+# HEC-RAS Linux binaries (platform-specific, not redistributable)
+bin/
+libs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Test / scratch outputs
+test_*/
+docker_test_*/
+docker_realbc_*/
+*.log
+
+# HEC-RAS run artifacts
+*.bco01
+*.ic.o01
+*.hyd.o01
+*.comp.hdf
+*.dss
+*.tmp.hdf
+
+# macOS
+.DS_Store
+.AppleDouble
+*.icloud
+
+# HDF5 large output files inside Examples (keep input .g01.hdf and .p01.hdf)
+# Uncomment if result files become too large:
+# Examples/**/*.p01.hdf
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
