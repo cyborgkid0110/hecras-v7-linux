@@ -1043,13 +1043,28 @@ def read_mesh_from_g01hdf(g01_hdf_path: Path) -> tuple:
         fp_is_perim_raw = hf[f'{area_path}/FacePoints Is Perimeter'][()]    # (n_fp,) -1=perim, 0=interior
 
     n_interior = len(cell_pts_input)
+    n_cells = len(cell_centers)
 
-    # Ghost cells have exactly 1 face (they share one face with the perimeter)
-    face_counts = cells_face_info[:, 1]
-    cell_is_boundary = face_counts == 1
+    # Ghost cells are all cells whose index is >= n_interior (the seed-point count).
+    # In standard RASMapper HDFs ghost cells also happen to have face_count == 1,
+    # but in other formats (e.g. internal-tool HDFs) ghost cells can have more faces.
+    cell_is_boundary = np.arange(n_cells) >= n_interior
 
     # Normalise fp_is_perimeter: True if perimeter (stored as -1 in HDF, 0 elsewhere)
     fp_is_perimeter = fp_is_perim_raw < 0  # bool array, True = perimeter
+
+    # Fallback for internal-tool HDFs where FacePoints Is Perimeter is all zeros:
+    # derive perimeter face points from topology — any FP belonging to a face
+    # that borders a ghost (boundary) cell is a perimeter face point.
+    if not fp_is_perimeter.any():
+        ghost_cell_set = set(int(i) for i in np.where(cell_is_boundary)[0])
+        perim_fp_set: set = set()
+        for fi in range(len(faces_ci)):
+            if int(faces_ci[fi, 0]) in ghost_cell_set or int(faces_ci[fi, 1]) in ghost_cell_set:
+                perim_fp_set.add(int(faces_fp[fi, 0]))
+                perim_fp_set.add(int(faces_fp[fi, 1]))
+        fp_is_perimeter = np.array([i in perim_fp_set for i in range(len(fp_coords))],
+                                   dtype=bool)
 
     mesh = MeshData()
     mesh.cell_centers = cell_centers.astype(np.float64)
@@ -1153,7 +1168,10 @@ def compute_bc_external_faces(g01_hdf_path: Path, mesh: MeshData,
     faces_nl = mesh.faces_normal_length    # (n_faces, 3) – column 2 is face length
 
     # --- Identify perimeter faces and their midpoints ---
-    perim_mask = (faces_ci[:, 0] >= n_interior) | (faces_ci[:, 1] >= n_interior)
+    # Use cell_is_boundary directly to handle non-contiguous ghost cell indices
+    # (internal-tool HDFs may have ghost cells at indices < n_interior)
+    cell_is_bnd = mesh.cell_is_boundary
+    perim_mask = cell_is_bnd[faces_ci[:, 0]] | cell_is_bnd[faces_ci[:, 1]]
     perim_face_indices = np.where(perim_mask)[0]
     midpoints = (fp_coords[faces_fp[perim_face_indices, 0]] +
                  fp_coords[faces_fp[perim_face_indices, 1]]) / 2.0
@@ -1510,7 +1528,12 @@ def update_geometry_hdf_with_tables(source_hdf: Path, output_path: Path,
             bc_grp.create_dataset('Attributes', data=new_data, **gz)
 
         if len(bc_ext_faces) > 0:
-            _add_ds(bc_grp, 'External Faces', bc_ext_faces, gz)
+            # Always overwrite External Faces — some source g01.hdf files
+            # (e.g. from internal tools) already have an empty (0,) dataset
+            # which _add_ds would silently skip.
+            if 'External Faces' in bc_grp:
+                del bc_grp['External Faces']
+            bc_grp.create_dataset('External Faces', data=bc_ext_faces, **gz)
 
     logger.info("  Geometry HDF updated with hydraulic tables")
 
@@ -1840,7 +1863,8 @@ def _write_bc_lines_from_g01(bc_grp, g01, mesh, area_name):
 # ============================================================================
 
 def assemble_p01_tmp_hdf(g01_hdf_path: Path, p01_text_path: Path,
-                          output_path: Path, projection_wkt: str = ""):
+                          output_path: Path, projection_wkt: str = "",
+                          project_name: str = ""):
     """Assemble p01.tmp.hdf from generated g01.hdf + parsed .p01 text."""
     logger.info("Assembling p01.tmp.hdf...")
 
@@ -1860,12 +1884,12 @@ def assemble_p01_tmp_hdf(g01_hdf_path: Path, p01_text_path: Path,
             ec_u.create_group('Initial Conditions')
 
             # Plan Data from .p01 text
-            _write_plan_data(fd, p01_text_path)
+            _write_plan_data(fd, p01_text_path, project_name=project_name)
 
     logger.info("  p01.tmp.hdf assembled: %s", output_path)
 
 
-def _write_plan_data(hf, p01_path):
+def _write_plan_data(hf, p01_path, project_name: str = ""):
     """Parse .p01 text and write Plan Data group."""
     raw = {}
     with open(p01_path, 'r') as f:
@@ -1875,6 +1899,9 @@ def _write_plan_data(hf, p01_path):
                 key, val = line.split('=', 1)
                 raw[key.strip()] = val.strip()
 
+    # Use project_name for filenames; fall back to p01_path stem if not provided
+    pname = project_name or Path(p01_path).stem.split('.')[0]
+
     pd = hf.create_group('Plan Data')
     pi = pd.create_group('Plan Information')
 
@@ -1883,9 +1910,9 @@ def _write_plan_data(hf, p01_path):
     pi.attrs['Plan ShortID'] = np.bytes_(raw.get('Short Identifier', '01').strip())
     pi.attrs['Computation Time Step Base'] = np.bytes_(raw.get('Computation Interval', '1MIN'))
     pi.attrs['Base Output Interval'] = np.bytes_(raw.get('Output Interval', '1HOUR'))
-    pi.attrs['Geometry Filename'] = np.bytes_(f"Muncie.{raw.get('Geom File', 'g01')}")
-    pi.attrs['Flow Filename'] = np.bytes_(f"Muncie.{raw.get('Flow File', 'u01')}")
-    pi.attrs['Plan Filename'] = np.bytes_(f"Muncie.{raw.get('Plan Title', 'p01')}")
+    pi.attrs['Geometry Filename'] = np.bytes_(f"{pname}.{raw.get('Geom File', 'g01')}")
+    pi.attrs['Flow Filename'] = np.bytes_(f"{pname}.{raw.get('Flow File', 'u01')}")
+    pi.attrs['Plan Filename'] = np.bytes_(f"{pname}.{raw.get('Plan Title', 'p01')}")
     pi.attrs['Project Title'] = np.bytes_(raw.get('Plan Title', 'Project'))
     pi.attrs['Project Filename'] = np.bytes_('project.prj')
 
@@ -1907,8 +1934,8 @@ def _write_plan_data(hf, p01_path):
 
 def _write_plan_parameters(pp, raw):
     """Write all 58 Plan Parameters with exact HDF dtypes."""
-    def f32(v): return np.float32(float(v))
-    def i32(v): return np.int32(int(v))
+    def f32(v): return np.float32(float(v or '0'))
+    def i32(v): return np.int32(int(v or '0'))
     def b(v): return np.bytes_(v)
     def af32(v): return np.array(v, dtype=np.float32)
     def ai32(v): return np.array(v, dtype=np.int32)
@@ -1944,27 +1971,27 @@ def _write_plan_parameters(pp, raw):
     # 2D params (arrays)
     eq_map = {'0': 'Diffusion Wave', '1': 'Shallow Water Equations'}
     pp.attrs['2D Equation Set'] = ab([eq_map.get(raw.get('UNET D2 Equation', '0'), 'Diffusion Wave')])
-    pp.attrs['2D Theta'] = af32([float(raw.get('UNET D2 Theta', '1'))])
-    pp.attrs['2D Theta Warmup'] = af32([float(raw.get('UNET D2 Theta Warmup', '1'))])
-    pp.attrs['2D Water Surface Tolerance'] = af32([float(raw.get('UNET D2 Z Tol', '0.01'))])
-    pp.attrs['2D Volume Tolerance'] = af32([float(raw.get('UNET D2 Volume Tol', '0.01'))])
-    pp.attrs['2D Maximum Iterations'] = ai32([int(raw.get('UNET D2 Max Iterations', '20'))])
-    pp.attrs['2D Number of Time Slices'] = ai32([int(raw.get('UNET D2 TimeSlices', '1'))])
-    pp.attrs['2D Cores (per mesh)'] = ai32([int(raw.get('UNET D2 Cores', '0'))])
+    pp.attrs['2D Theta'] = af32([float(raw.get('UNET D2 Theta', '1') or '1')])
+    pp.attrs['2D Theta Warmup'] = af32([float(raw.get('UNET D2 Theta Warmup', '1') or '1')])
+    pp.attrs['2D Water Surface Tolerance'] = af32([float(raw.get('UNET D2 Z Tol', '0.01') or '0.01')])
+    pp.attrs['2D Volume Tolerance'] = af32([float(raw.get('UNET D2 Volume Tol', '0.01') or '0.01')])
+    pp.attrs['2D Maximum Iterations'] = ai32([int(raw.get('UNET D2 Max Iterations', '20') or '20')])
+    pp.attrs['2D Number of Time Slices'] = ai32([int(raw.get('UNET D2 TimeSlices', '1') or '1')])
+    pp.attrs['2D Cores (per mesh)'] = ai32([int(raw.get('UNET D2 Cores', '0') or '0')])
     pp.attrs['2D Coriolis'] = b('True' if raw.get('UNET D2 Coriolis', '0') != '0' else 'False')
     pp.attrs['2D Latitude for Coriolis'] = af32([3.4028235e+38])
     pp.attrs['2D Turbulence Formulation'] = ab([raw.get('UNET D2 Turbulence Formulation', 'None')])
-    pp.attrs['2D Smagorinsky Mixing Coefficient'] = af32([float(raw.get('UNET D2 Smagorinsky Mixing', '0'))])
-    pp.attrs['2D Longitudinal Mixing Coefficient'] = af32([float(raw.get('UNET D2 Eddy Viscosity', '0'))])
-    pp.attrs['2D Transverse Mixing Coefficient'] = af32([float(raw.get('UNET D2 Transverse Eddy Viscosity', '0'))])
+    pp.attrs['2D Smagorinsky Mixing Coefficient'] = af32([float(raw.get('UNET D2 Smagorinsky Mixing', '0') or '0')])
+    pp.attrs['2D Longitudinal Mixing Coefficient'] = af32([float(raw.get('UNET D2 Eddy Viscosity', '0') or '0')])
+    pp.attrs['2D Transverse Mixing Coefficient'] = af32([float(raw.get('UNET D2 Transverse Eddy Viscosity', '0') or '0')])
     pp.attrs['2D Initial Conditions Ramp Up Time (hrs)'] = af32([float(raw.get('UNET D2 TotalICTime', '0') or '0')])
-    pp.attrs['2D Boundary Condition Ramp Up Fraction'] = af32([float(raw.get('UNET D2 RampUpFraction', '0.1'))])
+    pp.attrs['2D Boundary Condition Ramp Up Fraction'] = af32([float(raw.get('UNET D2 RampUpFraction', '0.1') or '0.1')])
     pp.attrs['2D Boundary Condition Volume Check'] = ab(['True' if raw.get('UNET D2 BCVolumeCheck', '0') != '0' else 'False'])
     pp.attrs['2D Matrix Solver'] = ab([raw.get('UNET D2 SolverType', 'PARDISO (Direct)').split('(')[0].strip()])
-    pp.attrs['2D Advanced Convergence'] = au8([int(raw.get('UNET D2 Advanced Convergence', '0'))])
-    pp.attrs['2D WS Max Tolerance'] = af32([float(raw.get('UNET D2 WS Max Tol', '0'))])
-    pp.attrs['2D WS RMS Tolerance'] = af32([float(raw.get('UNET D2 WS RMS Tol', '0'))])
-    pp.attrs['2D WS Stalling Tolerance'] = af32([float(raw.get('UNET D2 WS Stall Tol', '0'))])
+    pp.attrs['2D Advanced Convergence'] = au8([int(raw.get('UNET D2 Advanced Convergence', '0') or '0')])
+    pp.attrs['2D WS Max Tolerance'] = af32([float(raw.get('UNET D2 WS Max Tol', '0') or '0')])
+    pp.attrs['2D WS RMS Tolerance'] = af32([float(raw.get('UNET D2 WS RMS Tol', '0') or '0')])
+    pp.attrs['2D WS Stalling Tolerance'] = af32([float(raw.get('UNET D2 WS Stall Tol', '0') or '0')])
     pp.attrs['2D Only'] = b('True')
     pp.attrs['2D Names'] = ab(['Perimeter 1'])
 
@@ -2160,7 +2187,20 @@ def main():
                            lc_data, inf_data, g01, projection_wkt)
 
     # Step 7: Assemble p01.tmp.hdf (same for Workflows B and C)
-    assemble_p01_tmp_hdf(out_g01_hdf, p01_path, p01_tmp_path, projection_wkt)
+    assemble_p01_tmp_hdf(out_g01_hdf, p01_path, p01_tmp_path, projection_wkt,
+                         project_name=name)
+
+    # Step 8: Generate .b01 runtime boundary conditions file
+    u01_path = project_dir / f"{name}.u{plan}"
+    b01_path = output_dir / f"{name}.b{plan}"
+    generate_b01(p01_path, u01_path, b01_path, name)
+
+    # Step 9: Copy .u01 and generate .x01 to output dir
+    if u01_path.exists() and output_dir != project_dir:
+        shutil.copy2(str(u01_path), str(output_dir / u01_path.name))
+    x01_path = output_dir / f"{name}.x{plan}"
+    if not x01_path.exists():
+        _generate_x01(x01_path, out_g01_hdf)
 
     logger.info("=== DONE ===")
     logger.info("  Geometry: %s", out_g01_hdf)
@@ -2169,6 +2209,259 @@ def main():
     logger.info("Next steps:")
     logger.info("  1. RasGeomPreprocess %s.p%s.tmp.hdf x%s", name, plan, plan)
     logger.info("  2. RasUnsteady %s.p%s.tmp.hdf x%s", name, plan, plan)
+
+
+def generate_b01(p01_path: Path, u01_path: Path, b01_path: Path,
+                  project_name: str):
+    """Generate .b01 runtime boundary conditions file from .p01 and .u01.
+
+    The .b01 is a text file (CRLF line endings) required by RasUnsteady.
+    Format derived from HEC-RAS 6.6 GUI-generated .b01 files.
+    """
+    # Parse .p01
+    raw = {}
+    with open(p01_path, 'r') as f:
+        for line in f:
+            line = line.rstrip('\n\r')
+            if '=' in line:
+                key, val = line.split('=', 1)
+                raw[key.strip()] = val.strip()
+
+    plan_title = raw.get('Plan Title', project_name)
+    short_id = raw.get('Short Identifier', plan_title).strip().ljust(64)
+
+    # Parse simulation dates: "02JAN2000,0000,02JAN2000,2400"
+    # HEC-RAS .b01 uses previous-day-at-2400 for 0000 start times
+    sim_date = raw.get('Simulation Date', '')
+    parts = sim_date.split(',') if sim_date else []
+    if len(parts) >= 4:
+        start_date_raw, start_time_raw = parts[0].strip(), parts[1].strip()
+        end_date_raw, end_time_raw = parts[2].strip(), parts[3].strip()
+
+        # Convert 0000 → previous day at 2400
+        if start_time_raw == '0000':
+            from datetime import datetime as dt, timedelta
+            d = dt.strptime(start_date_raw.upper(), '%d%b%Y')
+            d -= timedelta(days=1)
+            start_b01 = d.strftime('%d%b%Y').lstrip('0') + ' 2400'
+            # Fix: strftime may give '1Jan2000' or '01Jan2000' — ensure 2-digit day
+            day_str = d.strftime('%d')
+            mon_str = d.strftime('%b')
+            yr_str = d.strftime('%Y')
+            start_b01 = f"{day_str}{mon_str}{yr_str} 2400"
+        else:
+            start_b01 = f"{start_date_raw} {start_time_raw}"
+
+        end_b01 = f"{end_date_raw.title()} {end_time_raw}"
+    else:
+        start_b01 = '01Jan2000 2400'
+        end_b01 = '02Jan2000 2400'
+
+    # Count actual BCs from .u01 (excluding empty pairs for FA)
+    n_bc = 0
+    if u01_path.exists():
+        with open(u01_path, 'r') as f:
+            for line in f:
+                if line.startswith('Boundary Location='):
+                    # Skip empty boundary location (pair for FA/precipitation)
+                    fields = line.split(',')
+                    bc_name = fields[7].strip() if len(fields) > 7 else ''
+                    if bc_name:
+                        n_bc += 1
+    n_bc = max(n_bc, 2)  # minimum 2 (upstream + downstream)
+
+    # Parse tolerances from .p01
+    dz_tol = raw.get('UNET ZTol', '0.01').strip() or '0.01'
+    dzsa_tol = raw.get('UNET ZSATol', '0.01').strip() or '0.01'
+    warmup_steps = raw.get('UNET DtIC', '0').strip() or '0'
+    # GUI uses 20 warmup steps by default for internal tool models
+    warmup_int = int(float(warmup_steps)) if warmup_steps != '0' else 20
+
+    dss_path = f"{project_name}.dss"
+
+    # Build .b01 content (CRLF line endings)
+    lines = [
+        'HEC-RAS 6.6 September 2024',
+        '       1       1       0       0',
+        '       0       0',
+        '       F',
+        '       1',
+        'Initial Conditions Flow Information',
+        '       1        Initial Profile',
+        ' 3.1E+38       2',
+        'Flow and Seasonal Roughness Flag (plan)',
+        '       F       F',
+        '       2       0       0',
+        '       3       0    .001',
+        ' 3.1E+38',
+        '       1       1       0       0',
+        '       0       0',
+        '       F',
+        'Project Title, Plan Title and Plan ShortID',
+        project_name,
+        plan_title,
+        short_id,
+        'Job Control Information',
+        '  Computation Interval  = %s' % raw.get('Computation Interval', '1MIN'),
+        '  Warmup Interval       =  0 ',
+        '  Instantaneous Profile = %s' % raw.get('Instantaneous Interval', '1HOUR'),
+        '  Hydrograph Interval   = %s' % raw.get('Output Interval', '1HOUR'),
+        '  Theta Simulation      =        1',
+        '  Theta Warmup          =        1',
+        '  Friction Slope Method =        2',
+        '  Maximum Iterations    =       20',
+        '  Max Iter WOImprovement=        0',
+        '  Number Warmup Steps   =       %d' % warmup_int,
+        '  Abort DZ Tolerance    =      100',
+        '  DZ Tolerance          =      %s' % dz_tol.lstrip('0'),
+        '  DZSA Tolerance        =      %s' % dzsa_tol.lstrip('0'),
+        '  DQ Tolerance          =  3.1E+38',
+        '  Weir Flow Stability   =        2',
+        '  Spillway Stability    =        1',
+        '  Write Restart File    =        F       F',
+        '  Echo Input TS         =        F',
+        '  Echo Parameters       =        F',
+        '  Echo Output TS        =        F',
+        '  DSS Message Level     =        4',
+        '  Write HDF5 File       =        T',
+        '  Write DSS File        =        T',
+        dss_path,
+        'Computational Time Window',
+        '  Start Date/Time       = %s' % start_b01,
+        '  End Date/Time         = %s' % end_b01,
+        'Initial Conditions (use restart file?)',
+        '       F',
+        'Log File Information',
+        '       F       0       0',
+        'Computation Level Output',
+        '       F-3.4E+38 3.4E+38       F       F       F       F       F       F       F       F       F   1HOUR',
+        'Mixed Flow - Acceleration term reduction based on Froude number',
+        '       F       4      .8       1',
+        'Number of Gate Groups and Internal Boundaries with Gates',
+        '       0       0       0       0',
+        'Breach Data',
+        '       0',
+        'Hydrograph Data',
+        '      %d' % n_bc,
+        '       F       F       T       F       F               F',
+        'Upstream Flow Hydrograph - River: Fake River  Reach: Fake Reach  RS: 100',
+        '       2',
+        '       0     100    8760     100',
+        ' 3.4E+38',
+        '       F       F       F       T       F',
+        'Downstream Normal Depth',
+        '    .001',
+        'Internal Observed Stage/Flow Boundaries',
+        '       0',
+        'Ground Water Interflows',
+        '       0',
+        'Old River Diversions',
+        '       F',
+        'Lateral Inflows, Ungaged Lateral Inflows, Outlet TS, and Observed DSS',
+        '       0       0       0       0',
+        'Stage and Flow Boundary and Ungaged Areas',
+        '       0       0',
+        'Time Slicing Parameters',
+        '       F',
+        'HYDROGRAPH LOCATIONS',
+        ' 0 ',
+        'Rules (number of rule sets, number of lookbacks, number of tables)',
+        '       0       0       0',
+        'Extra Commands',
+        '       0',
+    ]
+
+    with open(b01_path, 'wb') as f:
+        f.write('\r\n'.join(lines).encode('latin-1'))
+
+    logger.info("  Generated .b01: %s (%d BCs, time %s to %s)",
+                b01_path.name, n_bc, start_b01, end_b01)
+
+
+def _generate_x01(x01_path: Path, g01_hdf_path: Path):
+    """Generate a minimal .x01 (cross-section index) file.
+
+    Format derived from HEC-RAS 6.6 GUI-generated .x01 files.
+    Uses BEC template with substituted area name and cell count.
+    """
+    with h5py.File(str(g01_hdf_path), 'r') as f:
+        attrs = f['Geometry/2D Flow Areas/Attributes'][()]
+        area_name = attrs['Name'][0].decode().strip('\x00').strip()
+        n_cells = int(attrs['Cell Count'][0]) if 'Cell Count' in attrs.dtype.names else 0
+        if n_cells == 0:
+            # Fall back to total cells from Cells Center Coordinate
+            area_path = f'Geometry/2D Flow Areas/{area_name}'
+            if area_path + '/Cells Center Coordinate' in f:
+                n_cells = f[area_path + '/Cells Center Coordinate'].shape[0]
+
+    # Pad area name to 16 chars (HEC-RAS field width)
+    area_padded = area_name.ljust(16)[:16]
+
+    lines = [
+        'HEC-RAS 6.6 September 2024',
+        'Section - Arrays Sizes',
+        '01',
+        '       1       1       0       2       8       F',
+        '       3       3       0       0       0       0       0       0',
+        '       0       0       0       F       T       0       0       0       1       0       0       0',
+        '       0       0       F       F       0       0       0       F       0       0       F',
+        '       0',
+        '       1       1       0       F       T       F       0       3      30       T       T       F       0',
+        '       0     .01       F     .01      20      .3     .01       T       5       T       F',
+        'Section - Expansion and Contraction Coefficients',
+        '       0       0       2',
+        'Section - Expansion and Contraction Coefficients (Unsteady)',
+        '       2',
+        '       0       0       0       0',
+        'Section - Minor Loss Coefficients (Geometry)',
+        '       2',
+        '       0       0',
+        'Section - Job Control',
+        '       1       1       1       F       F       1',
+        'Section - Junction Information',
+        'Section - Reach Boundaries',
+        '       T       T       2       3        Fake River             F       F',
+        'Section - Encroachment Data',
+        'Section - Observed Water Surface Data',
+        'Section - Roughness Change Factors',
+        'Section - Breach Data',
+        'Section - Storage Area Data',
+        'SA     8                                                        %s' % area_padded,
+        '       0       0       0    %4d       T' % n_cells,
+        'Section - Storage Area Connection Data',
+        'Section - Pump Station Data',
+        'Section - River Reach Data',
+        'NODE   1Fake Reach      100                  100               0',
+        '       1       F',
+        '       4',
+        '       0      10       0       0     100       0     100      10',
+        'Section - XS Manning\'s/Roughness Data',
+        '       1       F       F       0',
+        '       0     .03',
+        '       0       0       0       0       F       F       0     100       F       F       0       0       0       0',
+        '       1       0       F',
+        '       0     100       0',
+        '       0       T',
+        '       0       0       0',
+        '      .5     .47      20',
+        'NODE   1Fake Reach      0                                      0',
+        '       1       F',
+        '       4',
+        '       0      10       0       0     100       0     100      10',
+        'Section - XS Manning\'s/Roughness Data',
+        '       1       F       F       0',
+        '       0     .03',
+        '       0       0       0       0       F       F       0     100       F       F       0       0       0       0',
+        '       1       0       F',
+        '       0     100       0',
+        '       0       T',
+        '       0       0       0',
+        '      .5     .47      20',
+    ]
+    with open(x01_path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+    logger.info("  Generated .x01: %s (area=%s, cells=%d)",
+                x01_path.name, area_name, n_cells)
 
 
 def _strip_results(src_hdf: Path, dst_hdf: Path) -> None:

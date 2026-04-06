@@ -1,8 +1,12 @@
 FROM rockylinux:8
 
 # Install Python 3 + scientific libraries needed by ras_preprocess.py
-RUN dnf install -y python3 python3-pip gdal python3-gdal && \
-    pip3 install numpy scipy h5py && \
+# GDAL lives in EPEL; PowerTools (CRB) provides some of its dependencies
+RUN dnf install -y epel-release && \
+    dnf config-manager --set-enabled powertools && \
+    dnf install -y python38 python38-pip python38-devel gdal gdal-devel gcc gcc-c++ findutils sed && \
+    pip3.8 install numpy scipy h5py matplotlib "GDAL==$(gdal-config --version)" && \
+    alternatives --set python3 /usr/bin/python3.8 && \
     dnf clean all
 
 # Copy the HEC-RAS distribution (bin/ + libs/) and project files into the image.
