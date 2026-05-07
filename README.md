@@ -46,7 +46,12 @@ conda install -c conda-forge gdal numpy scipy h5py matplotlib -y
 ---
 
 ## 4. Build Docker image
-
+Two options for building Docker image:
+- Pull from Docker Hub:
+```bash
+docker pull cyborgkid0110/hecras-v70-amd64:latest
+```
+- Build from source:
 ```bash
 docker build --platform linux/amd64 -t hecras-v70-amd64 .
 ```
