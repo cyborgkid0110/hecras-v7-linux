@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# run_simulation.sh — HEC-RAS v6.6 Linux end-to-end runner
+# run_simulation.sh — HEC-RAS v7.0 Linux end-to-end runner
 #
 # Usage:
 #   ./run_simulation.sh  <input.zip>  [output.zip]
@@ -29,7 +29,7 @@
 #
 # Requirements:
 #   • Python 3 with numpy / scipy / h5py / gdal installed
-#   • Docker with image hecras-v66-amd64 built (see README)
+#   • Docker with image hecras-v70-amd64 built (see README)
 #   • unzip, zip
 # =============================================================================
 set -euo pipefail
@@ -60,12 +60,12 @@ OUTPUT_ZIP="${2:-$(basename "${1%.zip}")_results.zip}"
 OUTPUT_ZIP="$(_abspath "$OUTPUT_ZIP")"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DOCKER_IMAGE="hecras-v66-amd64"
+DOCKER_IMAGE="hecras-v70-amd64"
 RAS_BIN="/opt/hecras/bin"
 RAS_LIBS="/opt/hecras/libs:/opt/hecras/libs/rhel_8:/opt/hecras/libs/mkl"
 
 echo "============================================="
-echo " HEC-RAS v6.6 Linux Simulation Runner"
+echo " HEC-RAS v7.0 Linux Simulation Runner"
 echo "============================================="
 echo " Input  : $INPUT_ZIP"
 echo " Output : $OUTPUT_ZIP"
@@ -118,9 +118,10 @@ echo "    Project dir : $PROJECT_DIR"
 # ---------------------------------------------------------------------------
 RUN_DIR="$WORKDIR/run"
 mkdir -p "$RUN_DIR"
+CONDA_PATH=/home/ad/anaconda3/condabin/conda
 
 echo "[2/4] Running Python preprocessor ..."
-python3 "$SCRIPT_DIR/ras_preprocess.py" "$PROJECT_DIR" --output-dir "$RUN_DIR"
+$CONDA_PATH run -n hecras python "$SCRIPT_DIR/ras_preprocess.py" "$PROJECT_DIR" --output-dir "$RUN_DIR"
 
 # Detect project name from generated g01.hdf (guaranteed to exist after step above)
 G01_HDF="$(ls "$RUN_DIR"/*.g01.hdf 2>/dev/null | head -1)"

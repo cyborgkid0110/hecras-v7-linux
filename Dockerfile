@@ -11,14 +11,13 @@ RUN dnf install -y epel-release && \
 
 # Copy the HEC-RAS distribution (bin/ + libs/) and project files into the image.
 # bin/ and libs/ must be present on the build host (not committed to git).
-COPY . /opt/hecras
+COPY bin/ /opt/hecras/bin/
+COPY libs/ /opt/hecras/libs/
 
 # Make HEC-RAS binaries executable
-RUN chmod +x /opt/hecras/bin/*
-
-# Make helper scripts executable and strip Windows line endings
-RUN find /opt/hecras/scripts -name "*.sh" -exec chmod +x {} \; && \
-    find /opt/hecras/scripts -name "*.sh" -exec sed -i 's/\r$//' {} \;
+RUN chmod +x /opt/hecras/bin/* && \
+    find /opt/hecras -type f -name "*.sh" -exec chmod +x {} \; && \
+    find /opt/hecras -type f -name "*.sh" -exec sed -i 's/\r$//' {} \;
 
 # Expose HEC-RAS shared libraries
 ENV LD_LIBRARY_PATH=/opt/hecras/libs:/opt/hecras/libs/rhel_8:/opt/hecras/libs/mkl

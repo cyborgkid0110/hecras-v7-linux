@@ -1,3 +1,10 @@
+# HEC-RAS engine binaries (downloaded separately via GitHub Release)
+bin/
+libs/
+
+# Example zip archives
+Examples/*.zip
+
 # Python
 __pycache__/
 *.py[cod]

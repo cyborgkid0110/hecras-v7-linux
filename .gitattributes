@@ -1,2 +1,2 @@
-bin/* filter=lfs diff=lfs merge=lfs -text
-libs/** filter=lfs diff=lfs merge=lfs -text
+# No LFS — bin/ and libs/ are excluded from git entirely (see .gitignore).
+# Engine binaries are distributed via GitHub Releases.
