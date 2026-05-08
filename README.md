@@ -90,6 +90,8 @@ MyProject.zip
         └── Infiltration.hdf
 ```
 
+The project should be run once on HEC-RAS Windows to generate the essential files.
+
 **Output zip contents:**
 
 | File | Description |
