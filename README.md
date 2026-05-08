@@ -40,6 +40,7 @@ cp -r Linux_RAS_v7/libs/* libs/
 
 ```bash
 conda create -n hecras python=3.8 -y
+conda activate hecras
 conda install -c conda-forge gdal numpy scipy h5py matplotlib -y
 ```
 
